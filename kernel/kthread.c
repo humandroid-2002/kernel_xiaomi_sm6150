@@ -674,10 +674,33 @@ repeat:
 	spin_unlock_irq(&worker->lock);
 
 	if (work) {
+		kthread_work_func_t func = work->func;
+
 		__set_current_state(TASK_RUNNING);
+
+		trace_sched_kthread_work_execute_start(work);
+
 		work->func(work);
-	} else if (!freezing(current))
+
+		/*
+		 * Avoid dereferencing work after this point.
+		 * The trace event only cares about the address.
+		 */
+		trace_sched_kthread_work_execute_end(work, func);
+
+	} else if (!freezing(current)) {
+
 		schedule();
+
+	} else {
+
+		/*
+		 * Handle the case where the current remains
+		 * TASK_INTERRUPTIBLE. try_to_freeze() expects
+		 * the current to be TASK_RUNNING.
+		 */
+		__set_current_state(TASK_RUNNING);
+	}
 
 	try_to_freeze();
 	cond_resched();
