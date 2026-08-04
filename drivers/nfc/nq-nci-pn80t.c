@@ -82,8 +82,6 @@ struct nqx_dev {
 	struct nqx_platform_data *pdata;
 };
 
-extern char *saved_command_line;
-
 static int nfcc_reboot(struct notifier_block *notifier, unsigned long val,
 			void *v);
 /*clock enable function*/
@@ -152,7 +150,6 @@ static irqreturn_t nqx_dev_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-#if 0
 static int is_data_available_for_read(struct nqx_dev *nqx_dev)
 {
 	int ret;
@@ -161,7 +158,6 @@ static int is_data_available_for_read(struct nqx_dev *nqx_dev)
 	ret = wait_event_interruptible(nqx_dev->read_wq, !nqx_dev->irq_enabled);
 	return ret;
 }
-#endif
 
 static ssize_t nfc_read(struct file *filp, char __user *buf,
 					size_t count, loff_t *offset)
@@ -261,6 +257,7 @@ static ssize_t nfc_write(struct file *filp, const char __user *buf,
 	struct nqx_dev *nqx_dev = filp->private_data;
 	char *tmp = NULL;
 	int ret = 0;
+	int retry_cnt;
 
 	if (!nqx_dev) {
 		ret = -ENODEV;
@@ -281,10 +278,16 @@ static ssize_t nfc_write(struct file *filp, const char __user *buf,
 		goto out;
 	}
 
-	ret = i2c_master_send(nqx_dev->client, tmp, count);
-	if (ret != count) {
+	retry_cnt = 0;
+	while (retry_cnt < MAX_RETRY_COUNT && (ret = i2c_master_send(nqx_dev->client, tmp, count)) != count) {
 		dev_err(&nqx_dev->client->dev,
-		"%s: failed to write %d\n", __func__, ret);
+				"%s: failed to write %d (retry_cnt = %d)\n", __func__, ret, retry_cnt);
+		usleep_range(10000, 11000);
+		retry_cnt++;
+	}
+
+	if (retry_cnt >= MAX_RETRY_COUNT) {
+		dev_err(&nqx_dev->client->dev, "%s: failed to write after %d retries\n", __func__, retry_cnt);
 		ret = -EIO;
 		goto out_free;
 	}
@@ -707,7 +710,6 @@ static const struct file_operations nfc_dev_fops = {
  * This function will block NFCC to enter FW download mode.
  */
 
-#if 0
 /* Check for availability of NQ_ NFC controller hardware */
 static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 {
@@ -925,7 +927,6 @@ err_nfcc_hw_check:
 done:
 	return ret;
 }
-#endif
 
 /*
  * Routine to enable clock.
@@ -1039,13 +1040,6 @@ static int nqx_probe(struct i2c_client *client,
 	struct nqx_dev *nqx_dev;
 
 	dev_dbg(&client->dev, "%s: enter\n", __func__);
-
-	if (strnstr(saved_command_line, "androidboot.hwc=INDIA",
-					strlen(saved_command_line)) != NULL) {
-		dev_err(&client->dev, "%s:NFC HWC India : Do not probe nqx\n", __func__);
-		return -ENODEV;
-	}
-
 	if (client->dev.of_node) {
 		platform_data = devm_kzalloc(&client->dev,
 			sizeof(struct nqx_platform_data), GFP_KERNEL);
@@ -1234,7 +1228,7 @@ static int nqx_probe(struct i2c_client *client,
 	/* NFC_INT IRQ */
 	nqx_dev->irq_enabled = true;
 	r = request_irq(client->irq, nqx_dev_irq_handler,
- 			  IRQF_TRIGGER_RISING, client->name, nqx_dev);
+			  IRQF_TRIGGER_HIGH, client->name, nqx_dev);
 	if (r) {
 		dev_err(&client->dev, "%s: request_irq failed\n", __func__);
 		goto err_request_irq_failed;
@@ -1242,7 +1236,6 @@ static int nqx_probe(struct i2c_client *client,
 	nqx_disable_irq(nqx_dev);
 
 	/* Do not perform nfcc_hw_check, make sure that nfcc is present */
-#if 0
 	/*
 	 * To be efficient we need to test whether nfcc hardware is physically
 	 * present before attempting further hardware initialisation.
@@ -1255,7 +1248,6 @@ static int nqx_probe(struct i2c_client *client,
 		/* We don't think there is hardware switch NFC OFF */
 		goto err_request_hw_check_failed;
 	}
-#endif
 
 	/* Register reboot notifier here */
 	r = register_reboot_notifier(&nfcc_notifier);
@@ -1271,13 +1263,11 @@ static int nqx_probe(struct i2c_client *client,
 	}
 
 #ifdef NFC_KERNEL_BU
-	if (nqx_dev->pdata->clk_pin_voting) {
-		r = nqx_clock_select(nqx_dev);
-		if (r < 0) {
-			dev_err(&client->dev,
-				"%s: nqx_clock_select failed\n", __func__);
-			goto err_clock_en_failed;
-		}
+	r = nqx_clock_select(nqx_dev);
+	if (r < 0) {
+		dev_err(&client->dev,
+			"%s: nqx_clock_select failed\n", __func__);
+		goto err_clock_en_failed;
 	}
 	gpio_set_value(platform_data->en_gpio, 1);
 #endif
